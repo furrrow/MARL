@@ -1,0 +1,10 @@
+torch
+torchvision
+torchaudio
+torchrl
+benchmarl
+vmas
+pettingzoo[all]
+tqdm
+matplotlib
+PyAV
