@@ -31,7 +31,6 @@ from torchrl.modules import (
 
 from torchrl.objectives import DDPGLoss, SoftUpdate, ValueEstimators
 from torchrl.record import CSVLogger, PixelRenderTransform, VideoRecorder
-from tqdm import tqdm
 
 
 def process_batch(batch: TensorDictBase, env: TransformedEnv) -> TensorDictBase:
@@ -102,9 +101,8 @@ def main():
     n_chasers = 2
     n_evaders = 1
     n_obstacles = 2
-    n_agents = 3
 
-    render = True  # doesn't work yet
+    render = True
 
     num_vmas_envs = (
             frames_per_batch // max_steps
@@ -121,17 +119,6 @@ def main():
         num_adversaries=n_chasers,
         num_landmarks=n_obstacles,
     )
-
-    # base_env = VmasEnv(
-    #     scenario="navigation",
-    #     num_envs=num_vmas_envs,
-    #     continuous_actions=True,  # VMAS supports both continuous and discrete actions
-    #     max_steps=max_steps,
-    #     device=device,
-    #     # Scenario kwargs
-    #     n_agents=n_agents,
-    #     # These are custom kwargs that change for each VMAS scenario, see the VMAS repo to know more.
-    # )
 
     """Transforms"""
     env = TransformedEnv(
@@ -306,12 +293,6 @@ def main():
         for group, loss in losses.items()
     }
 
-    pbar = tqdm(
-        total=n_iters,
-        desc=", ".join(
-            [f"episode_reward_mean_{group} = 0" for group in env.group_map.keys()]
-        ),
-    )
     episode_reward_mean_map = {group: [] for group in env.group_map.keys()}
     train_group_map = copy.deepcopy(env.group_map)
 
@@ -372,16 +353,8 @@ def main():
             )
             episode_reward_mean_map[group].append(episode_reward_mean)
 
-        pbar.set_description(
-            ", ".join(
-                [
-                    f"episode_reward_mean_{group} = {episode_reward_mean_map[group][-1]}"
-                    for group in env.group_map.keys()
-                ]
-            ),
-            refresh=False,
-        )
-        pbar.update()
+        [print(f"episode_reward_mean_{group} = {episode_reward_mean_map[group][-1]}")
+         for group in env.group_map.keys()]
 
     fig, axs = plt.subplots(2, 1)
     for i, group in enumerate(env.group_map.keys()):
@@ -399,30 +372,30 @@ def main():
     """ Rendering """
     if render:
         # Replace tmpdir with any desired path where the video should be saved
-        with tempfile.TemporaryDirectory() as tmpdir:
-            video_logger = CSVLogger("vmas_logs", tmpdir, video_format="mp4")
-            print("Creating rendering env")
-            env_with_render = TransformedEnv(env.base_env, env.transform.clone())
-            env_with_render = env_with_render.append_transform(
-                PixelRenderTransform(
-                    out_keys=["pixels"],
-                    # the np.ndarray has a negative stride and needs to be copied before being cast to a tensor
-                    preproc=lambda x: x.copy(),
-                    as_non_tensor=True,
-                    # asking for array rather than on-screen rendering
-                    mode="rgb_array",
-                )
+        logdir = "saves"
+        video_logger = CSVLogger("vmas_logs", logdir, video_format="mp4")
+        print("Creating rendering env")
+        env_with_render = TransformedEnv(env.base_env, env.transform.clone())
+        env_with_render = env_with_render.append_transform(
+            PixelRenderTransform(
+                out_keys=["pixels"],
+                # the np.ndarray has a negative stride and needs to be copied before being cast to a tensor
+                preproc=lambda x: x.copy(),
+                as_non_tensor=True,
+                # asking for array rather than on-screen rendering
+                mode="rgb_array",
             )
-            env_with_render = env_with_render.append_transform(
-                VideoRecorder(logger=video_logger, tag="vmas_rendered")
-            )
-            with set_exploration_type(ExplorationType.MODE):
-                print("Rendering rollout...")
-                env_with_render.rollout(100, policy=agents_exploration_policy)
-            print("Saving the video...")
-            env_with_render.transform.dump()
-            print("Saved! Saved directory tree:")
-            video_logger.print_log_dir()
+        )
+        env_with_render = env_with_render.append_transform(
+            VideoRecorder(logger=video_logger, tag="vmas_rendered")
+        )
+        with set_exploration_type(ExplorationType.MODE):
+            print("Rendering rollout...")
+            env_with_render.rollout(100, policy=agents_exploration_policy)
+        print("Saving the video...")
+        env_with_render.transform.dump()
+        print("Saved! Saved directory tree:")
+        video_logger.print_log_dir()
 
 
 if __name__ == "__main__":

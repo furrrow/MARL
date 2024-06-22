@@ -39,12 +39,12 @@ def main():
         if torch.cuda.is_available()
         else torch.device("cpu")
     )
-    device = torch.device("cpu")
+    device = torch.device("cuda")
     vmas_device = device  # The device where the simulator is run (VMAS can run on GPU)
 
     # Sampling
     frames_per_batch = 6_000  # Number of team frames collected per training iteration
-    n_iters = 100  # Number of sampling and training iterations
+    n_iters = 10  # Number of sampling and training iterations
     total_frames = frames_per_batch * n_iters
 
     # Training
@@ -94,8 +94,6 @@ def main():
     check_env_specs(env)
 
     """Policy"""
-    share_parameters_policy = True
-
     policy_net = torch.nn.Sequential(
         MultiAgentMLP(
             n_agent_inputs=env.observation_spec["agents", "observation"].shape[
@@ -104,7 +102,7 @@ def main():
             n_agent_outputs=2 * env.action_spec.shape[-1],  # 2 * n_actions_per_agents
             n_agents=env.n_agents,
             centralised=False,  # the policies are decentralised (ie each agent will act from its observation)
-            share_params=share_parameters_policy,
+            share_params=True,
             device=device,
             depth=2,
             num_cells=256,
@@ -133,15 +131,12 @@ def main():
     )  # we'll need the log-prob for the PPO loss
 
     """Critic"""
-    share_parameters_critic = True
-    mappo = True  # IPPO if False
-
     critic_net = MultiAgentMLP(
         n_agent_inputs=env.observation_spec["agents", "observation"].shape[-1],
         n_agent_outputs=1,  # 1 value per agent
         n_agents=env.n_agents,
-        centralised=mappo,
-        share_params=share_parameters_critic,
+        centralised=True,  # IPPO if False
+        share_params=True,
         device=device,
         depth=2,
         num_cells=256,
@@ -191,16 +186,12 @@ def main():
         terminated=("agents", "terminated"),
     )
 
-    loss_module.make_value_estimator(
-        ValueEstimators.GAE, gamma=gamma, lmbda=lmbda
-    )  # We build GAE
+    loss_module.make_value_estimator(ValueEstimators.GAE, gamma=gamma, lmbda=lmbda)  # We build GAE
     GAE = loss_module.value_estimator
 
     optim = torch.optim.Adam(loss_module.parameters(), lr)
 
     """Training Loop"""
-    pbar = tqdm(total=n_iters, desc="episode_reward_mean = 0")
-
     episode_reward_mean_list = []
     for tensordict_data in collector:
         tensordict_data.set(
@@ -255,8 +246,7 @@ def main():
             tensordict_data.get(("next", "agents", "episode_reward"))[done].mean().item()
         )
         episode_reward_mean_list.append(episode_reward_mean)
-        pbar.set_description(f"episode_reward_mean = {episode_reward_mean}", refresh=False)
-        pbar.update()
+        print(f"episode_reward_mean = {episode_reward_mean:.3f}")
 
     plt.plot(episode_reward_mean_list)
     plt.xlabel("Training iterations")
