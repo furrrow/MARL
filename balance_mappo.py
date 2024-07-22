@@ -8,7 +8,6 @@ import torch
 # Tensordict modules
 from tensordict.nn import TensorDictModule
 from tensordict.nn.distributions import NormalParamExtractor
-from torch import multiprocessing
 
 # Data collection
 from torchrl.collectors import SyncDataCollector
@@ -27,12 +26,11 @@ from torchrl.modules import MultiAgentMLP, ProbabilisticActor, TanhNormal
 # Loss
 from torchrl.objectives import ClipPPOLoss, ValueEstimators
 
-from utils import save_as_mp4
+from utils import save_as_gif, save_as_mp4
+from matplotlib import pyplot as plt
 
 # Utils
 torch.manual_seed(0)
-from matplotlib import pyplot as plt
-from tqdm import tqdm
 
 
 def main():
@@ -41,16 +39,16 @@ def main():
         if torch.cuda.is_available()
         else torch.device("cpu")
     )
-    device = torch.device("cpu")
+    device = torch.device("cuda")
     vmas_device = device  # The device where the simulator is run (VMAS can run on GPU)
 
     # Sampling
-    frames_per_batch = 6_000  # Number of team frames collected per training iteration
-    n_iters = 20  # Number of sampling and training iterations
+    frames_per_batch = 6_000 # 6_000  # Number of team frames collected per training iteration
+    n_iters = 100 # 10  # Number of sampling and training iterations
     total_frames = frames_per_batch * n_iters
 
     # Training
-    num_epochs = 30  # Number of optimization steps per training iteration
+    num_epochs = 10  # Number of optimization steps per training iteration
     minibatch_size = 400  # Size of the mini-batches in each optimization step
     lr = 3e-4  # Learning rate
     max_grad_norm = 1.0  # Maximum norm for the gradients
@@ -62,13 +60,17 @@ def main():
     entropy_eps = 1e-4  # coefficient of the entropy term in the PPO loss
     render = True
 
-    """Environment"""
-    max_steps = 100  # Episode steps before done
+    """Environment
+    NOTE: max step 200 in https://github.com/proroklab/VectorizedMultiAgentSimulator/blob/main/vmas/examples/rllib.py
+    but max_steps used in the paper was never explicitly spelled out?!?!
+    """
+
+    max_steps = 200 # 100  # Episode steps before done
     num_vmas_envs = (
             frames_per_batch // max_steps
     )  # Number of vectorized envs. frames_per_batch should be divisible by this number
-    scenario_name = "navigation"
-    n_agents = 3
+    scenario_name = "balance"
+    n_agents = 4
 
     env = VmasEnv(
         scenario=scenario_name,
@@ -81,6 +83,7 @@ def main():
         # These are custom kwargs that change for each VMAS scenario, see the VMAS repo to know more.
     )
 
+    print(f"num_envs: {env.num_envs}")
     # print("action_spec:", env.full_action_spec)
     # print("reward_spec:", env.full_reward_spec)
     # print("done_spec:", env.full_done_spec)
@@ -254,18 +257,12 @@ def main():
     plt.xlabel("Training iterations")
     plt.ylabel("Reward")
     plt.title("Episode reward mean")
+    plt.savefig(f"{scenario_name}_history.png")
     plt.show()
 
     if render:
-        # with torch.no_grad():
-        #     env.rollout(
-        #         max_steps=max_steps,
-        #         policy=policy,
-        #         callback=lambda env, _: env.render(),
-        #         auto_cast_to_device=True,
-        #         break_when_any_done=False,
-        #     )
-        save_as_mp4(env, max_steps * 3, policy, scenario_name)
+        # save_as_gif(env, max_steps, policy, scenario_name)
+        save_as_mp4(env, max_steps*5, policy, scenario_name)
 
 
 if __name__ == "__main__":

@@ -73,12 +73,8 @@ def main():
 
     # Sampling
     frames_per_batch = 1_000  # Number of team frames collected per sampling iteration
-    n_iters = 10  # Number of sampling and training iterations
+    n_iters = 30  # Number of sampling and training iterations
     total_frames = frames_per_batch * n_iters
-
-    # We will stop training the evaders after this many iterations,
-    # should be 0 <= iteration_when_stop_training_evaders <= n_iters
-    iteration_when_stop_training_evaders = n_iters // 2
 
     # Replay buffer
     memory_size = 1_000_000  # The replay buffer of each group can store this many frames
@@ -95,10 +91,8 @@ def main():
 
     """Environment"""
     max_steps = 100  # Environment steps before done
-    scenario_name = "simple_tag"
-    n_chasers = 2
-    n_evaders = 1
-    n_obstacles = 2
+    scenario_name = "balance"
+    n_agents = 4
 
     render = True
 
@@ -113,28 +107,27 @@ def main():
         device=device,
         seed=seed,
         # Scenario specific
-        num_good_agents=n_evaders,
-        num_adversaries=n_chasers,
-        num_landmarks=n_obstacles,
+        n_agents=n_agents,
     )
 
     """Transforms"""
     env = TransformedEnv(
         base_env,
         RewardSum(
-            in_keys=base_env.reward_keys,
-            reset_keys=["_reset"] * len(base_env.group_map.keys()),
+            in_keys=[base_env.reward_key],
+            out_keys=[("agents", "episode_reward")]
         ),
     )
     check_env_specs(env)
 
     # base env group map
+    print(f"num_envs: {base_env.num_envs}")
     print(f"group_map: {base_env.group_map}")
     # other info can be accessed as thus:
-    # print("action_spec:", base_env.full_action_spec)
-    # print("reward_spec:", base_env.full_reward_spec)
-    # print("done_spec:", base_env.full_done_spec)
-    # print("observation_spec:", base_env.observation_spec)
+    print("action_spec:", base_env.full_action_spec)
+    print("reward_spec:", base_env.full_reward_spec)
+    print("done_spec:", base_env.full_done_spec)
+    print("observation_spec:", base_env.observation_spec)
 
     """Policy"""
     policy_modules = {}
@@ -231,7 +224,7 @@ def main():
     reset_td = env.reset()
     for group, _agents in env.group_map.items():
         print(f"Running value and policy for group '{group}':",
-              critics[group](policies[group](reset_td)),)
+              critics[group](policies[group](reset_td)), )
 
     """Data Collection"""
 
@@ -336,10 +329,6 @@ def main():
             # Exploration sigma anneal update
             exploration_policies[group].step(current_frames)
 
-        # Stop training a certain group when a condition is met (e.g., number of training iterations)
-        if iteration == iteration_when_stop_training_evaders:
-            del train_group_map["agent"]
-
         # Logging
         for group in env.group_map.keys():
             episode_reward_mean = (
@@ -354,17 +343,11 @@ def main():
         [print(f"episode_reward_mean_{group} = {episode_reward_mean_map[group][-1]}")
          for group in env.group_map.keys()]
 
-    fig, axs = plt.subplots(2, 1)
-    for i, group in enumerate(env.group_map.keys()):
-        axs[i].plot(episode_reward_mean_map[group], label=f"Episode reward mean {group}")
-        axs[i].set_ylabel("Reward")
-        axs[i].axvline(
-            x=iteration_when_stop_training_evaders,
-            label="Agent (evader) stop training",
-            color="orange",
-        )
-        axs[i].legend()
-    axs[-1].set_xlabel("Training iterations")
+    group = list(env.group_map.keys())[0]
+    plt.plot(episode_reward_mean_map[group])
+    plt.xlabel("Training iterations")
+    plt.ylabel("Reward")
+    plt.title("Episode reward mean")
     plt.show()
 
     """ Rendering """

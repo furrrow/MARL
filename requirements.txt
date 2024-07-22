@@ -2,7 +2,9 @@ torch
 torchvision
 torchaudio
 torchrl
+tensordict
 benchmarl
+wandb
 vmas
 pettingzoo[all]
 tqdm
