@@ -72,8 +72,8 @@ def main():
     device = torch.device('cpu')
 
     # Sampling
-    frames_per_batch = 1_000  # Number of team frames collected per sampling iteration
-    n_iters = 30  # Number of sampling and training iterations
+    frames_per_batch = 6_000  # Number of team frames collected per sampling iteration
+    n_iters = 500  # Number of sampling and training iterations
     total_frames = frames_per_batch * n_iters
 
     # Replay buffer

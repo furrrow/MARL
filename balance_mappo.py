@@ -43,7 +43,7 @@ def main():
     vmas_device = device  # The device where the simulator is run (VMAS can run on GPU)
 
     # Sampling
-    frames_per_batch = 6_000 # 6_000  # Number of team frames collected per training iteration
+    frames_per_batch = 6_000  # Number of team frames collected per training iteration
     n_iters = 100 # 10  # Number of sampling and training iterations
     total_frames = frames_per_batch * n_iters
 
@@ -65,7 +65,7 @@ def main():
     but max_steps used in the paper was never explicitly spelled out?!?!
     """
 
-    max_steps = 200 # 100  # Episode steps before done
+    max_steps = 100  # Episode steps before done
     num_vmas_envs = (
             frames_per_batch // max_steps
     )  # Number of vectorized envs. frames_per_batch should be divisible by this number
