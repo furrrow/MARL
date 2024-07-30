@@ -34,7 +34,7 @@ class Args:
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
-    render_video: bool = True
+    render_video: bool = False
     """render video"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
@@ -48,7 +48,7 @@ class Args:
     """number of agents"""
     num_envs: int = 12
     """number of environments"""
-    env_max_steps: int = 100
+    env_max_steps: int = 200
     """environment steps before done"""
     total_timesteps: int = 1_000_000
     """total timesteps of the experiments"""

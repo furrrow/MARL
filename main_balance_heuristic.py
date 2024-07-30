@@ -27,6 +27,8 @@ class Args:
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
+    cuda: bool = False
+    """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "cleanRL"
@@ -47,7 +49,7 @@ class Args:
     """number of agents"""
     num_envs: int = 12
     """number of environments"""
-    env_max_steps: int = 100
+    env_max_steps: int = 200
     """environment steps before done"""
     total_timesteps: int = 1_000_000
     """total timesteps of the experiments"""
