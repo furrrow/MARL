@@ -73,10 +73,10 @@ class Args:
 
 
 class QNetwork(nn.Module):
-    def __init__(self, n_total_states, n_total_actions):
+    def __init__(self, envs, agent_idx):
         super().__init__()
-        self.fc1 = nn.Linear(n_total_states
-                             + n_total_actions, 256)
+        self.fc1 = nn.Linear(np.array(envs.observation_space[agent_idx].shape).prod()
+                             + np.prod(envs.action_space[agent_idx].shape), 256)
         self.fc2 = nn.Linear(256, 256)
         self.fc3 = nn.Linear(256, 1)
 
@@ -164,11 +164,9 @@ def main():
     target_actor_list = []
     actor_optimizer_list = []
     buffer_list = []
-    n_total_actions = sum([space.shape[0] for space in envs.action_space])
-    n_total_states = sum([space.shape[0] for space in envs.observation_space])
     for idx in range(args.n_agents):
-        qf1 = QNetwork(n_total_states, n_total_actions).to(device)
-        qf1_target = QNetwork(n_total_states, n_total_actions).to(device)
+        qf1 = QNetwork(envs, idx).to(device)
+        qf1_target = QNetwork(envs, idx).to(device)
         qf1_target.load_state_dict(qf1.state_dict())
         q_optimizer = optim.Adam(list(qf1.parameters()), lr=args.learning_rate)
         actor = Actor(envs, idx).to(device)
@@ -241,61 +239,42 @@ def main():
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
-            data = rb.sample(args.batch_size)
-            # reshape into [batch_size, n_agents * dim]
-            observations = data["observations"].reshape(args.batch_size, -1)
-            next_observations = data["next_observations"].reshape(args.batch_size, -1)
-            actions = data["actions"].reshape(args.batch_size, -1)
-            # transpose such that agent is the first dim instead of batch size
-            next_observations_t = torch.transpose(data["next_observations"], 0, 1)
-            rewards_t = torch.transpose(data["rewards"], 0, 1)
+            for i in range(args.n_agents):
+                data = buffer_list[i].sample(args.batch_size)
+                with (torch.no_grad()):
+                    next_state_actions = target_actor_list[i](data["next_observations"])
+                    qf1_next_target = critic_target_list[i](data["next_observations"], next_state_actions)
+                    next_q_value = data["rewards"].flatten() + (
+                                1 - 1 * data["dones"].flatten()) * args.gamma * qf1_next_target.view(-1)
 
-            next_q_value_list = []
-            with (torch.no_grad()):
-                next_state_actions = torch.stack([target_actor(next_obs_sample) for target_actor, next_obs_sample
-                                                  in zip(target_actor_list, next_observations_t)])
-                # reshape into [batch_size, n_agents * dim]
-                next_state_actions = torch.transpose(next_state_actions, 0, 1).reshape(args.batch_size, -1)
-                for idx in range(args.n_agents):
-                    qf1_next_target = critic_target_list[idx](next_observations, next_state_actions)
-                    next_q_value_list.append(rewards_t[idx] + (
-                            1 - 1 * data["dones"].flatten()) * args.gamma * qf1_next_target.view(-1))
-            for idx in range(args.n_agents):
-                qf1_a_values = critic_list[idx](observations, actions).view(-1)
-                qf1_loss = F.mse_loss(qf1_a_values, next_q_value_list[idx])
+                qf1_a_values = critic_list[i](data["observations"], data["actions"]).view(-1)
+                qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
 
                 # optimize the model
-                critic_optimizer_list[idx].zero_grad()
+                critic_optimizer_list[i].zero_grad()
                 qf1_loss.backward()
-                critic_optimizer_list[idx].step()
+                critic_optimizer_list[i].step()
 
-            if loop % args.policy_frequency == 0:
-                # transpose such that agent is the first dim instead of batch size
-                observations_t = torch.transpose(data["observations"], 0, 1)
-                for idx in range(args.n_agents):
-                    state_actions = torch.stack([actor(obs) for actor, obs
-                                                 in zip(actor_list, observations_t)])
-                    # reshape into [batch_size, n_agents * dim]
-                    state_actions = torch.transpose(state_actions, 0, 1).reshape(args.batch_size, -1)
-                    actor_loss = -critic_list[idx](observations, state_actions).mean()
-                    actor_optimizer_list[idx].zero_grad()
+                if loop % args.policy_frequency == 0:
+                    actor_loss = -critic_list[i](data["observations"], actor_list[i](data["observations"])).mean()
+                    actor_optimizer_list[i].zero_grad()
                     actor_loss.backward()
-                    actor_optimizer_list[idx].step()
+                    actor_optimizer_list[i].step()
 
                     # update the target network
-                    for param, target_param in zip(actor_list[idx].parameters(), target_actor_list[idx].parameters()):
+                    for param, target_param in zip(actor_list[i].parameters(), target_actor_list[i].parameters()):
                         target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-                    for param, target_param in zip(critic_list[idx].parameters(), critic_target_list[idx].parameters()):
+                    for param, target_param in zip(critic_list[i].parameters(), critic_target_list[i].parameters()):
                         target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
-            if loop % 100 == 0:
-                writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
-                writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
-                # print("SPS:", int(global_step / (time.time() - start_time)))
-                print(f"global step {global_step} qf1_loss {qf1_loss.item():.3f} actor_loss {actor_loss.item():.3f} "
-                      f"buffer size {len(rb.storage)}")
-                writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+                if loop % 100 == 0:
+                    writer.add_scalar(f"losses/qf{i}_values", qf1_a_values.mean().item(), global_step)
+                    writer.add_scalar(f"losses/qf{i}_loss", qf1_loss.item(), global_step)
+                    writer.add_scalar(f"losses/actor{i}_loss", actor_loss.item(), global_step)
+                    # print("SPS:", int(global_step / (time.time() - start_time)))
+                    print(f"global step {global_step} qf1_loss {qf1_loss.item():.3f} actor_loss {actor_loss.item():.3f} "
+                          f"buffer size {len(buffer_list[i].storage)}")
+                    writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
             # separate iterator from global_step due to multiple envs
             loop += 1
 

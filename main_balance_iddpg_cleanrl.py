@@ -238,7 +238,7 @@ def main():
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
-            for idx in range(args.n_agents):
+            for i in range(args.n_agents):
                 data = buffer_list[i].sample(args.batch_size)
                 with (torch.no_grad()):
                     next_state_actions = target_actor_list[i](data["next_observations"])
