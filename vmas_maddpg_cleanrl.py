@@ -50,7 +50,7 @@ class Args:
     """number of environments"""
     env_max_steps: int = 200
     """environment steps before done"""
-    total_timesteps: int = 1_000_000
+    total_timesteps: int = 2_000_000
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
@@ -70,15 +70,17 @@ class Args:
     """the frequency of training policy (delayed)"""
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
+    n_hidden: int = 256
+    """number of units per hidden layer"""
 
 
 class QNetwork(nn.Module):
-    def __init__(self, n_total_states, n_total_actions):
+    def __init__(self, n_total_states, n_total_actions, n_hidden=256):
         super().__init__()
         self.fc1 = nn.Linear(n_total_states
-                             + n_total_actions, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, 1)
+                             + n_total_actions, n_hidden)
+        self.fc2 = nn.Linear(n_hidden, n_hidden)
+        self.fc3 = nn.Linear(n_hidden, 1)
 
     def forward(self, x, a):
         x = torch.cat([x, a], 1)
@@ -89,11 +91,11 @@ class QNetwork(nn.Module):
 
 
 class Actor(nn.Module):
-    def __init__(self, envs, agent_idx):
+    def __init__(self, envs, agent_idx, n_hidden=256):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(envs.observation_space[agent_idx].shape).prod(), 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc_mu = nn.Linear(256, np.prod(envs.action_space[agent_idx].shape))
+        self.fc1 = nn.Linear(np.array(envs.observation_space[agent_idx].shape).prod(), n_hidden)
+        self.fc2 = nn.Linear(n_hidden, n_hidden)
+        self.fc_mu = nn.Linear(n_hidden, np.prod(envs.action_space[agent_idx].shape))
         # action rescaling
         self.register_buffer(
             "action_scale", torch.tensor((envs.action_space[agent_idx].high[0]
@@ -114,7 +116,7 @@ class Actor(nn.Module):
 def main():
     args = tyro.cli(Args)
     current_time = datetime.datetime.now()
-    run_name = f"{args.scenario_name}__{args.exp_name}__{args.seed}__{current_time.strftime('%m%d%y_%H%M')}"
+    run_name = f"{args.exp_name}__{args.seed}__{current_time.strftime('%m%d%y_%H%M')}"
     if args.track:
         import wandb
 
@@ -127,7 +129,7 @@ def main():
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"runs/{args.scenario_name}/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -161,31 +163,33 @@ def main():
     critic_target_list = []
     critic_optimizer_list = []
     actor_list = []
-    target_actor_list = []
+    actor_target_list = []
     actor_optimizer_list = []
+    buffer_list = []
     n_total_actions = sum([space.shape[0] for space in envs.action_space])
     n_total_states = sum([space.shape[0] for space in envs.observation_space])
     for idx in range(args.n_agents):
-        qf1 = QNetwork(n_total_states, n_total_actions).to(device)
-        qf1_target = QNetwork(n_total_states, n_total_actions).to(device)
+        qf1 = QNetwork(n_total_states, n_total_actions, args.n_hidden).to(device)
+        qf1_target = QNetwork(n_total_states, n_total_actions, args.n_hidden).to(device)
         qf1_target.load_state_dict(qf1.state_dict())
         q_optimizer = optim.Adam(list(qf1.parameters()), lr=args.learning_rate)
-        actor = Actor(envs, idx).to(device)
-        target_actor = Actor(envs, idx).to(device)
+        actor = Actor(envs, idx, args.n_hidden).to(device)
+        target_actor = Actor(envs, idx, args.n_hidden).to(device)
         target_actor.load_state_dict(actor.state_dict())
         actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.learning_rate)
+        rb = ReplayBuffer(
+            storage=LazyTensorStorage(max_size=args.buffer_size, device=device),
+            batch_size=args.batch_size,
+        )
 
         critic_list.append(qf1)
         critic_target_list.append(qf1_target)
         critic_optimizer_list.append(q_optimizer)
         actor_list.append(actor)
-        target_actor_list.append(target_actor)
+        actor_target_list.append(target_actor)
         actor_optimizer_list.append(actor_optimizer)
+        buffer_list.append(rb)
 
-    rb = ReplayBuffer(
-        storage=LazyTensorStorage(max_size=args.buffer_size, device=device),
-        batch_size=args.batch_size,
-    )
     start_time = time.time()
 
     frame_list = []  # For creating a gif
@@ -211,14 +215,16 @@ def main():
 
         # save to replay buffer
         real_next_obs = next_obs.copy()
-        data = TensorDict({
-            "observations": torch.stack(obs, dim=1),
-            "next_observations": torch.stack(real_next_obs, dim=1),
-            "actions": torch.stack(actions, dim=1),
-            "rewards": torch.stack(rewards, dim=1),
-            "dones": dones,
-        }, batch_size=[envs.num_envs]).to(device)
-        rb.extend(data)
+        for i in range(envs.n_agents):
+            data = TensorDict({
+                "observations": obs[i],
+                "next_observations": real_next_obs[i],
+                "actions": actions[i],
+                "rewards": rewards[i],
+                "dones": dones,
+                # "infos": infos[i],  # to save on RAM comment me out
+            }, batch_size=[envs.num_envs]).to(device)
+            buffer_list[i].extend(data)
 
         # record rewards for plotting purposes
         global_reward = torch.stack(rewards, dim=1).mean(dim=1)
@@ -237,60 +243,59 @@ def main():
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
-            data = rb.sample(args.batch_size)
-            # reshape into [batch_size, n_agents * dim]
-            observations = data["observations"].reshape(args.batch_size, -1)
-            next_observations = data["next_observations"].reshape(args.batch_size, -1)
-            actions = data["actions"].reshape(args.batch_size, -1)
-            # transpose such that agent is the first dim instead of batch size
-            next_observations_t = torch.transpose(data["next_observations"], 0, 1)
-            rewards_t = torch.transpose(data["rewards"], 0, 1)
+            sample_list = [buffer_i.sample(args.batch_size) for buffer_i in buffer_list]
+            # a_ means agent is first dim
+            a_observations = [data["observations"] for data in sample_list]
+            a_next_observations = [data["next_observations"] for data in sample_list]
+            a_actions = [data["actions"] for data in sample_list]
+            a_rewards = [data["rewards"] for data in sample_list]
+            a_dones = [data["dones"] for data in sample_list]
+            # b_ means batch-size is first dim, and other dimensions are concatenated
+            b_observations = torch.concat(a_observations, dim=1)
+            b_next_observations = torch.concat(a_next_observations, dim=1)
+            b_actions = torch.concat(a_actions, dim=1)
 
             next_q_value_list = []
             with (torch.no_grad()):
-                next_state_actions = torch.stack([target_actor(next_obs_sample) for target_actor, next_obs_sample
-                                                  in zip(target_actor_list, next_observations_t)])
+                next_state_actions = torch.concat([target_actor(next_obs_sample) for target_actor, next_obs_sample
+                                                  in zip(actor_target_list, a_next_observations)], dim=1)
                 # reshape into [batch_size, n_agents * dim]
-                next_state_actions = torch.transpose(next_state_actions, 0, 1).reshape(args.batch_size, -1)
                 for idx in range(args.n_agents):
-                    qf1_next_target = critic_target_list[idx](next_observations, next_state_actions)
-                    next_q_value_list.append(rewards_t[idx] + (
-                            1 - 1 * data["dones"].flatten()) * args.gamma * qf1_next_target.view(-1))
+                    qf1_next_target = critic_target_list[idx](b_next_observations, next_state_actions)
+                    next_q_value_list.append(a_rewards[idx] + (
+                            1 - 1 * a_dones[idx].flatten()) * args.gamma * qf1_next_target.view(-1))
             for idx in range(args.n_agents):
-                qf1_a_values = critic_list[idx](observations, actions).view(-1)
+                qf1_a_values = critic_list[idx](b_observations, b_actions).view(-1)
                 qf1_loss = F.mse_loss(qf1_a_values, next_q_value_list[idx])
 
                 # optimize the model
                 critic_optimizer_list[idx].zero_grad()
                 qf1_loss.backward()
                 critic_optimizer_list[idx].step()
+                if loop % 100 == 0:
+                    writer.add_scalar(f"losses/qf{idx}_values", qf1_a_values.mean().item(), global_step)
+                    writer.add_scalar(f"losses/qf{idx}_loss", qf1_loss.item(), global_step)
 
             if loop % args.policy_frequency == 0:
-                # transpose such that agent is the first dim instead of batch size
-                observations_t = torch.transpose(data["observations"], 0, 1)
                 for idx in range(args.n_agents):
-                    state_actions = torch.stack([actor(obs) for actor, obs
-                                                 in zip(actor_list, observations_t)])
-                    # reshape into [batch_size, n_agents * dim]
-                    state_actions = torch.transpose(state_actions, 0, 1).reshape(args.batch_size, -1)
-                    actor_loss = -critic_list[idx](observations, state_actions).mean()
+                    state_actions = torch.concat([actor(obs) for actor, obs
+                                                 in zip(actor_list, a_observations)], dim=1)
+                    actor_loss = -critic_list[idx](b_observations, state_actions).mean()
                     actor_optimizer_list[idx].zero_grad()
                     actor_loss.backward()
                     actor_optimizer_list[idx].step()
 
                     # update the target network
-                    for param, target_param in zip(actor_list[idx].parameters(), target_actor_list[idx].parameters()):
+                    for param, target_param in zip(actor_list[idx].parameters(), actor_target_list[idx].parameters()):
                         target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
                     for param, target_param in zip(critic_list[idx].parameters(), critic_target_list[idx].parameters()):
                         target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
+                    if loop % 100 == 0:
+                        writer.add_scalar(f"losses/actor{idx}_loss", actor_loss.item(), global_step)
+
             if loop % 100 == 0:
-                writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
-                writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 # print("SPS:", int(global_step / (time.time() - start_time)))
-                print(f"global step {global_step} qf1_loss {qf1_loss.item():.3f} actor_loss {actor_loss.item():.3f} "
-                      f"buffer size {len(rb.storage)}")
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
             # separate iterator from global_step due to multiple envs
             loop += 1

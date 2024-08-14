@@ -58,7 +58,7 @@ class Args:
 def main():
     args = tyro.cli(Args)
     current_time = datetime.datetime.now()
-    run_name = f"{args.scenario_name}__{args.exp_name}__{args.seed}__{current_time.strftime('%m%d%y_%H%M')}"
+    run_name = f"{args.exp_name}__{args.seed}__{current_time.strftime('%m%d%y_%H%M')}"
     if args.track:
         import wandb
 
@@ -71,7 +71,7 @@ def main():
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"runs/{args.scenario_name}/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),

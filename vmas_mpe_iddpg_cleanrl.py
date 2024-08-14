@@ -50,35 +50,37 @@ class Args:
     """number of environments"""
     env_max_steps: int = 100
     """environment steps before done"""
-    total_timesteps: int = 1_000_000  # 2_500_000
+    total_timesteps: int = 2_500_000  # 2_500_000
     """total timesteps of the experiments"""
-    learning_rate: float = 3e-4
+    learning_rate: float = 0.01
     """the learning rate of the optimizer"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""
-    gamma: float = 0.99
+    gamma: float = 0.95
     """the discount factor gamma"""
-    tau: float = 0.005
+    tau: float = 0.01
     """target smoothing coefficient (default: 0.005)"""
-    batch_size: int = 256
+    batch_size: int = 1024
     """the batch size of sample from the reply memory"""
     exploration_noise: float = 0.1
     """the scale of exploration noise"""
     learning_starts: int = 25e3
     """timestep to start learning"""
-    policy_frequency: int = 2
+    policy_frequency: int = 100
     """the frequency of training policy (delayed)"""
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
+    n_hidden: int = 64
+    """number of units per hidden layer"""
 
 
 class QNetwork(nn.Module):
-    def __init__(self, envs, agent_idx):
+    def __init__(self, envs, agent_idx, n_hidden=256):
         super().__init__()
         self.fc1 = nn.Linear(np.array(envs.observation_space[agent_idx].shape).prod()
-                             + np.prod(envs.action_space[agent_idx].shape), 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, 1)
+                             + np.prod(envs.action_space[agent_idx].shape), n_hidden)
+        self.fc2 = nn.Linear(n_hidden, n_hidden)
+        self.fc3 = nn.Linear(n_hidden, 1)
 
     def forward(self, x, a):
         x = torch.cat([x, a], 1)
@@ -89,11 +91,11 @@ class QNetwork(nn.Module):
 
 
 class Actor(nn.Module):
-    def __init__(self, envs, agent_idx):
+    def __init__(self, envs, agent_idx, n_hidden=256):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(envs.observation_space[agent_idx].shape).prod(), 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc_mu = nn.Linear(256, np.prod(envs.action_space[agent_idx].shape))
+        self.fc1 = nn.Linear(np.array(envs.observation_space[agent_idx].shape).prod(), n_hidden)
+        self.fc2 = nn.Linear(n_hidden, n_hidden)
+        self.fc_mu = nn.Linear(n_hidden, np.prod(envs.action_space[agent_idx].shape))
         # action rescaling
         self.register_buffer(
             "action_scale", torch.tensor((envs.action_space[agent_idx].high[0]
@@ -114,7 +116,7 @@ class Actor(nn.Module):
 def main():
     args = tyro.cli(Args)
     current_time = datetime.datetime.now()
-    run_name = f"{args.scenario_name}__{args.exp_name}__{args.seed}__{current_time.strftime('%m%d%y_%H%M')}"
+    run_name = f"{args.exp_name}__{args.seed}__{current_time.strftime('%m%d%y_%H%M')}"
     if args.track:
         import wandb
 
@@ -127,7 +129,7 @@ def main():
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"runs/{args.scenario_name}/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -161,16 +163,16 @@ def main():
     critic_target_list = []
     critic_optimizer_list = []
     actor_list = []
-    target_actor_list = []
+    actor_target_list = []
     actor_optimizer_list = []
     buffer_list = []
     for idx in range(args.n_agents):
-        qf1 = QNetwork(envs, idx).to(device)
-        qf1_target = QNetwork(envs, idx).to(device)
+        qf1 = QNetwork(envs, idx, args.n_hidden).to(device)
+        qf1_target = QNetwork(envs, idx, args.n_hidden).to(device)
         qf1_target.load_state_dict(qf1.state_dict())
         q_optimizer = optim.Adam(list(qf1.parameters()), lr=args.learning_rate)
-        actor = Actor(envs, idx).to(device)
-        target_actor = Actor(envs, idx).to(device)
+        actor = Actor(envs, idx, args.n_hidden).to(device)
+        target_actor = Actor(envs, idx, args.n_hidden).to(device)
         target_actor.load_state_dict(actor.state_dict())
         actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.learning_rate)
         rb = ReplayBuffer(
@@ -182,7 +184,7 @@ def main():
         critic_target_list.append(qf1_target)
         critic_optimizer_list.append(q_optimizer)
         actor_list.append(actor)
-        target_actor_list.append(target_actor)
+        actor_target_list.append(target_actor)
         actor_optimizer_list.append(actor_optimizer)
         buffer_list.append(rb)
 
@@ -242,7 +244,7 @@ def main():
             for i in range(args.n_agents):
                 data = buffer_list[i].sample(args.batch_size)
                 with (torch.no_grad()):
-                    next_state_actions = target_actor_list[i](data["next_observations"])
+                    next_state_actions = actor_target_list[i](data["next_observations"])
                     qf1_next_target = critic_target_list[i](data["next_observations"], next_state_actions)
                     next_q_value = data["rewards"].flatten() + (
                                 1 - 1 * data["dones"].flatten()) * args.gamma * qf1_next_target.view(-1)
@@ -262,7 +264,7 @@ def main():
                     actor_optimizer_list[i].step()
 
                     # update the target network
-                    for param, target_param in zip(actor_list[i].parameters(), target_actor_list[i].parameters()):
+                    for param, target_param in zip(actor_list[i].parameters(), actor_target_list[i].parameters()):
                         target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
                     for param, target_param in zip(critic_list[i].parameters(), critic_target_list[i].parameters()):
                         target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)

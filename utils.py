@@ -2,6 +2,9 @@ import torch
 from tensordict.nn import set_interaction_type, InteractionType
 from torchrl.envs import TransformedEnv, ExplorationType, set_exploration_type
 from torchrl.record import CSVLogger, PixelRenderTransform, VideoRecorder
+import matplotlib.pyplot as plt
+from IPython import display
+from PIL import Image
 
 
 # TODO: saved video terminates prematurely despite increased max_steps param, needs fix
@@ -32,7 +35,6 @@ def save_as_mp4(env, max_steps, policy, scenario_name, logdir="saves", exp_name=
 
 
 def save_as_gif(env, max_steps, policy, scenario_name):
-    from PIL import Image
     def rendering_callback(env, td):
         env.frames.append(Image.fromarray(env.render(mode="rgb_array")))
 
@@ -53,3 +55,15 @@ def save_as_gif(env, max_steps, policy, scenario_name):
         duration=3,
         loop=0,
     )
+
+def show_render(frame, env_id, step):
+    # plt.clf()
+    print("image")
+    fig = plt.figure(1)
+    plt.imshow(frame)
+    # plt.axis('off')
+    plt.show()
+    # plt.title(f"{env_id} frame {frame} step {step}")
+
+    display.clear_output(wait=True)
+    display.display(plt.gcf())
