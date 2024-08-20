@@ -165,7 +165,10 @@ def main():
     actor_list = []
     actor_target_list = []
     actor_optimizer_list = []
-    buffer_list = []
+    rb = ReplayBuffer(
+        storage=LazyTensorStorage(max_size=args.buffer_size, device=device),
+        batch_size=args.batch_size,
+    )
     n_total_actions = sum([space.shape[0] for space in envs.action_space])
     n_total_states = sum([space.shape[0] for space in envs.observation_space])
     for idx in range(args.n_agents):
@@ -177,10 +180,6 @@ def main():
         target_actor = Actor(envs, idx, args.n_hidden).to(device)
         target_actor.load_state_dict(actor.state_dict())
         actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.learning_rate)
-        rb = ReplayBuffer(
-            storage=LazyTensorStorage(max_size=args.buffer_size, device=device),
-            batch_size=args.batch_size,
-        )
 
         critic_list.append(qf1)
         critic_target_list.append(qf1_target)
@@ -188,7 +187,6 @@ def main():
         actor_list.append(actor)
         actor_target_list.append(target_actor)
         actor_optimizer_list.append(actor_optimizer)
-        buffer_list.append(rb)
 
     start_time = time.time()
 
@@ -215,16 +213,15 @@ def main():
 
         # save to replay buffer
         real_next_obs = next_obs.copy()
-        for i in range(envs.n_agents):
-            data = TensorDict({
-                "observations": obs[i],
-                "next_observations": real_next_obs[i],
-                "actions": actions[i],
-                "rewards": rewards[i],
-                "dones": dones,
-                # "infos": infos[i],  # to save on RAM comment me out
-            }, batch_size=[envs.num_envs]).to(device)
-            buffer_list[i].extend(data)
+        data = TensorDict({
+            "observations": torch.stack(obs, dim=1),
+            "next_observations": torch.stack(real_next_obs, dim=1),
+            "actions": torch.stack(actions, dim=1),
+            "rewards": torch.stack(rewards, dim=1),
+            "dones": dones,
+            # "infos": torch.stack(infos, dim=1),  # to save on RAM comment me out
+        }, batch_size=[envs.num_envs]).to(device)
+        rb.extend(data)
 
         # record rewards for plotting purposes
         global_reward = torch.stack(rewards, dim=1).mean(dim=1)
@@ -243,17 +240,17 @@ def main():
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
-            sample_list = [buffer_i.sample(args.batch_size) for buffer_i in buffer_list]
+            sample = rb.sample(args.batch_size)
             # a_ means agent is first dim
-            a_observations = [data["observations"] for data in sample_list]
-            a_next_observations = [data["next_observations"] for data in sample_list]
-            a_actions = [data["actions"] for data in sample_list]
-            a_rewards = [data["rewards"] for data in sample_list]
-            a_dones = [data["dones"] for data in sample_list]
+            a_observations = sample["observations"].transpose(0, 1)
+            a_next_observations = sample["next_observations"].transpose(0, 1)
+            a_actions = sample["actions"].transpose(0, 1)
+            a_rewards = sample["rewards"].transpose(0, 1)
+            a_dones = sample['dones'].repeat(envs.n_agents, 1)
             # b_ means batch-size is first dim, and other dimensions are concatenated
-            b_observations = torch.concat(a_observations, dim=1)
-            b_next_observations = torch.concat(a_next_observations, dim=1)
-            b_actions = torch.concat(a_actions, dim=1)
+            b_observations = torch.concat(list(a_observations), dim=1)
+            b_next_observations = torch.concat(list(a_next_observations), dim=1)
+            b_actions = torch.concat(list(a_actions), dim=1)
 
             next_q_value_list = []
             with (torch.no_grad()):

@@ -160,10 +160,13 @@ def main():
     actors = {}
     actor_targets = {}
     actor_optimizers = {}
-    buffers = {}
     n_total_actions = sum([value.shape[0] for key, value in envs.action_spaces.items()])
     n_total_states = sum([value.shape[0] for key, value in envs.observation_spaces.items()])
     total_reward = {}
+    rb = ReplayBuffer(
+        storage=LazyTensorStorage(max_size=args.buffer_size, device=device),
+        batch_size=args.batch_size,
+    )
     for agent_name in envs.agents:
         qf1 = QNetwork(n_total_states, n_total_actions, args.n_hidden).to(device)
         qf1_target = QNetwork(n_total_states, n_total_actions, args.n_hidden).to(device)
@@ -173,10 +176,6 @@ def main():
         actor_target = Actor(envs, agent_name, args.n_hidden).to(device)
         actor_target.load_state_dict(actor.state_dict())
         actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.learning_rate)
-        rb = ReplayBuffer(
-            storage=LazyTensorStorage(max_size=args.buffer_size, device=device),
-            batch_size=args.batch_size,
-        )
 
         critics[agent_name] = qf1
         critic_targets[agent_name] = qf1_target
@@ -184,7 +183,6 @@ def main():
         actors[agent_name] = actor
         actor_targets[agent_name] = actor_target
         actor_optimizers[agent_name] = actor_optimizer
-        buffers[agent_name] = rb
         total_reward[agent_name] = 0
 
     start_time = time.time()
@@ -213,17 +211,17 @@ def main():
 
             # save to replay buffer
             real_next_obs = next_obs.copy()
-            for agent_name in envs.agents:
-                data = TensorDict({
-                    "observations": np.expand_dims(obs[agent_name], 0),
-                    "next_observations": np.expand_dims(real_next_obs[agent_name], 0),
-                    "actions": np.expand_dims(actions[agent_name], 0),
-                    "rewards": np.expand_dims(rewards[agent_name], 0),
-                    "dones": np.expand_dims(dones[agent_name], 0),
-                    # "infos": infos[agent_name],  # to save on RAM comment me out
-                }, batch_size=[1]).to(device)
-                buffers[agent_name].extend(data)
-                # record rewards for plotting purposes
+            data = TensorDict({
+                "observations": TensorDict(obs).unsqueeze(0),
+                "next_observations": TensorDict(real_next_obs).unsqueeze(0),
+                "actions": TensorDict(actions).unsqueeze(0),
+                "rewards": TensorDict(rewards).unsqueeze(0),
+                "dones": TensorDict(dones).unsqueeze(0),
+                # "infos": infos[agent_name],  # to save on RAM comment me out
+            }, batch_size=[1]).to(device)
+            rb.extend(data)
+            # record rewards for plotting purposes
+            for agent_name in agent_names:
                 total_reward[agent_name] += rewards[agent_name]
             global_step += 1
 
@@ -232,30 +230,24 @@ def main():
 
             # ALGO LOGIC: training.
             if global_step > args.learning_starts:
-                sample_list = [buffers[name].sample(args.batch_size) for name in agent_names]
-                # a_ means agent is first dim
-                a_observations = [data["observations"] for data in sample_list]
-                a_next_observations = [data["next_observations"] for data in sample_list]
-                a_actions = [data["actions"] for data in sample_list]
-                a_rewards = [data["rewards"] for data in sample_list]
-                a_dones = [data["dones"] for data in sample_list]
+                sample = rb.sample(args.batch_size)
                 # b_ means batch-size is first dim, and other dimensions are concatenated
-                b_observations = torch.concat(a_observations, dim=1)
-                b_next_observations = torch.concat(a_next_observations, dim=1)
-                b_actions = torch.concat(a_actions, dim=1)
+                b_observations = torch.concat([sample["observations"][name] for name in agent_names], dim=1)
+                b_next_observations = torch.concat([sample["next_observations"][name] for name in agent_names], dim=1)
+                b_actions = torch.concat([sample["actions"][name] for name in agent_names], dim=1)
 
-                next_q_value_list = []
+                next_q_values = {}
                 with (torch.no_grad()):
-                    next_state_actions = torch.concat([actor_targets[agent_name](next_obs_sample) for agent_name, next_obs_sample
-                                                      in zip(agent_names, a_next_observations)], dim=1)
+                    next_state_actions = torch.concat([actor_targets[agent_name](sample["next_observations"][agent_name])
+                                                       for agent_name in agent_names], dim=1)
                     # reshape into [batch_size, n_agents * dim]
-                    for idx, agent_name in enumerate(agent_names):
+                    for agent_name in agent_names:
                         qf1_next_target = critic_targets[agent_name](b_next_observations, next_state_actions)
-                        next_q_value_list.append(a_rewards[idx] + (
-                                1 - 1 * a_dones[idx].flatten()) * args.gamma * qf1_next_target.view(-1))
-                for idx, agent_name in enumerate(agent_names):
+                        next_q_values[agent_name] = sample["rewards"][agent_name] + (
+                                1 - 1 * sample['dones'][agent_name].flatten()) * args.gamma * qf1_next_target.view(-1)
+                for agent_name in agent_names:
                     qf1_a_values = critics[agent_name](b_observations, b_actions).view(-1)
-                    qf1_loss = F.mse_loss(qf1_a_values, next_q_value_list[idx].to(torch.float32))
+                    qf1_loss = F.mse_loss(qf1_a_values, next_q_values[agent_name].to(torch.float32))
 
                     # optimize the model
                     critic_optimizers[agent_name].zero_grad()
@@ -267,8 +259,8 @@ def main():
 
                 if loop % args.policy_frequency == 0:
                     for agent_name in agent_names:
-                        state_actions = torch.concat([actors[name](obs) for name, obs
-                                                     in zip(agent_names, a_observations)], dim=1)
+                        state_actions = torch.concat(
+                            [actors[name](sample["observations"][name]) for name in agent_names], dim=1)
                         actor_loss = -critics[agent_name](b_observations, state_actions).mean()
                         actor_optimizers[agent_name].zero_grad()
                         actor_loss.backward()

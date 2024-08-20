@@ -12,3 +12,10 @@ matplotlib
 PyAV
 av
 PExpect
+
+pillow
+gymnasium
+tyro
+supersuit
+gym
+pygame
