@@ -57,7 +57,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 5e-5
     """the learning rate of the optimizer"""
-    num_steps: int = 200
+    num_steps: int = 2048
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -179,7 +179,7 @@ def main():
         n_agents=args.n_agents,
     )
     assert (args.n_agents == envs.n_agents), "arg n_agents mismatch env n_agents"
-    assert (args.num_steps == args.env_max_steps), "warning environment max step does not match rollout steps"
+    # assert (args.num_steps == args.env_max_steps), "warning environment max step does not match rollout steps"
     assert envs.continuous_actions, "only continuous action space is supported"
     # CAVEAT: observation and action space must be same for all agents!!!
 
@@ -225,17 +225,18 @@ def main():
             for i in range(envs.n_agents):
                 buffers[i]['obs'][step] = next_obs[i]
                 buffers[i]['dones'][step] = next_done[i]
-                with torch.no_grad():
+                with (torch.no_grad()):
                     action, logprob, _, value = agent_list[i].get_action_and_value(next_obs[i])
                     buffers[i]["values"][step] = value.flatten()
-                    low_limit, high_limit = torch.tensor(envs.action_space[i].low), torch.tensor(envs.action_space[i].high)
+                    low_limit = torch.tensor(envs.action_space[i].low).to(device)
+                    high_limit = torch.tensor(envs.action_space[i].high).to(device)
                     action = action.clip(low_limit, high_limit)
                 buffers[i]["actions"][step], actions[i] = action, action
                 buffers[i]["logprobs"][step] = logprob
 
             # execute the game and log data.
             next_obs, rewards, terminations, infos = envs.step(actions)
-            next_dones = terminations
+            next_done = terminations * 1.
             for i in range(envs.n_agents):
                 buffers[i]["rewards"][step] = torch.tensor(rewards[i]).to(device).view(-1)
 
@@ -261,7 +262,7 @@ def main():
                 lastgaelam = 0
                 for t in reversed(range(args.num_steps)):
                     if t == args.num_steps - 1:
-                        nextnonterminal = 1.0 - next_done[i]
+                        nextnonterminal = 1.0 - next_done
                         nextvalues = next_value
                     else:
                         nextnonterminal = 1.0 - buffers[i]["dones"][t + 1]
@@ -333,6 +334,7 @@ def main():
                     optimizer_list[i].step()
 
                 if args.target_kl is not None and approx_kl > args.target_kl:
+                    print(f"agent{i} breaking")
                     break
 
             y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
