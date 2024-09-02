@@ -49,7 +49,7 @@ class Args:
     """the scenario_name of the VMAS scenario"""
     n_agents: int = 4
     """number of agents"""
-    num_envs: int = 12
+    num_envs: int = 5
     """number of environments"""
     env_max_steps: int = 200
     """environment steps before done"""
@@ -186,14 +186,14 @@ def main():
     agent_list = []
     optimizer_list = []
     buffers = []
-    for idx in range(args.n_agents):
-        agent = Agent(envs, idx, args.n_hidden).to(device)
+    for i_e in range(args.n_agents):
+        agent = Agent(envs, i_e, args.n_hidden).to(device)
         optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
         # ALGO Logic: Storage setup
         buffer = TensorDict({
-            "obs": torch.zeros((args.num_steps, args.num_envs) + envs.observation_space[idx].shape).to(device),
-            "actions": torch.zeros((args.num_steps, args.num_envs) + envs.action_space[idx].shape).to(device),
+            "obs": torch.zeros((args.num_steps, args.num_envs) + envs.observation_space[i_e].shape).to(device),
+            "actions": torch.zeros((args.num_steps, args.num_envs) + envs.action_space[i_e].shape).to(device),
             "logprobs": torch.zeros((args.num_steps, args.num_envs)).to(device),
             "rewards": torch.zeros((args.num_steps, args.num_envs)).to(device),
             "dones": torch.zeros((args.num_steps, args.num_envs)).to(device),
@@ -210,6 +210,7 @@ def main():
     next_done = torch.zeros(args.num_envs).to(device)
     frame_list = []  # For creating a gif
     total_reward = torch.zeros(envs.num_envs).to(device)
+    each_env_steps = np.zeros(envs.num_envs).astype(int)
 
     for iteration in range(1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
@@ -222,65 +223,91 @@ def main():
         for step in range(0, args.num_steps):
             actions = [None] * envs.n_agents
 
-            for i in range(envs.n_agents):
-                buffers[i]['obs'][step] = next_obs[i]
-                buffers[i]['dones'][step] = next_done[i]
+            for i_a in range(envs.n_agents):
+                buffers[i_a]['obs'][step] = next_obs[i_a]
+                buffers[i_a]['dones'][step] = next_done[i_a]
                 with (torch.no_grad()):
-                    action, logprob, _, value = agent_list[i].get_action_and_value(next_obs[i])
-                    buffers[i]["values"][step] = value.flatten()
-                    low_limit = torch.tensor(envs.action_space[i].low).to(device)
-                    high_limit = torch.tensor(envs.action_space[i].high).to(device)
+                    action, logprob, _, value = agent_list[i_a].get_action_and_value(next_obs[i_a])
+                    buffers[i_a]["values"][step] = value.flatten()
+                    low_limit = torch.tensor(envs.action_space[i_a].low).to(device)
+                    high_limit = torch.tensor(envs.action_space[i_a].high).to(device)
                     action = action.clip(low_limit, high_limit)
-                buffers[i]["actions"][step], actions[i] = action, action
-                buffers[i]["logprobs"][step] = logprob
+                buffers[i_a]["actions"][step], actions[i_a] = action, action
+                buffers[i_a]["logprobs"][step] = logprob
 
             # execute the game and log data.
             next_obs, rewards, terminations, infos = envs.step(actions)
             next_done = terminations * 1.
-            for i in range(envs.n_agents):
-                buffers[i]["rewards"][step] = torch.tensor(rewards[i]).to(device).view(-1)
+            for i_a in range(envs.n_agents):
+                buffers[i_a]["rewards"][step] = torch.tensor(rewards[i_a]).to(device).view(-1)
 
             # record rewards for plotting purposes
             global_reward = torch.stack(rewards, dim=1).mean(dim=1)
             total_reward += global_reward
-            for idx, item in enumerate(terminations):
-                if bool(item) is True:
-                    writer.add_scalar("charts/episodic_return", total_reward[idx], global_step)
-                    print(f"global_step {global_step} done detected at idx {idx} "
-                          f"rewards {rewards[0][idx]:.3f} episodic_returns {total_reward[idx]:.3f}")
-                    next_obs = envs.reset_at(index=idx)
-                    total_reward[idx] = 0
+            for i_e, item in enumerate(terminations):
                 global_step += 1
+                each_env_steps[i_e] += 1
+                if bool(item) is True:
+                    writer.add_scalar("charts/episodic_return", total_reward[i_e], global_step)
+                    print(f"global_step {global_step} done detected at idx {i_e} "
+                          f"rewards {rewards[0][i_e]:.3f} episodic_returns {total_reward[i_e]:.3f}")
+
+                    # bootstrap value if not done
+                    a_returns = []
+                    a_advantages = []
+                    with torch.no_grad():
+                        for i_a in range(envs.n_agents):
+                            next_value = agent_list[i_a].get_value(next_obs[i_a][i_e]).reshape(1, -1)
+                            advantages = torch.zeros_like(buffers[i_a]["rewards"][:, i_e]).to(device)
+                            lastgaelam = 0
+                            for t in reversed(range(each_env_steps[i_e])):
+                                if t == args.num_steps - 1:
+                                    nextnonterminal = 1.0 - next_done[i_e]
+                                    nextvalues = next_value
+                                else:
+                                    nextnonterminal = 1.0 - buffers[i_a]["dones"][:, i_e][t + 1]
+                                    nextvalues = buffers[i_a]["values"][:, i_e][t + 1]
+                                delta = buffers[i_a]["rewards"][:, i_e][t] + args.gamma * nextvalues * nextnonterminal - \
+                                        buffers[i_a]["values"][:, i_e][t]
+                                advantages[
+                                    t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+                            returns = advantages + buffers[i_a]["values"][:, i_e][t]
+                            a_returns.append(returns)
+                            a_advantages.append(advantages)
+
+                    next_obs = envs.reset_at(index=i_e)
+                    total_reward[i_e] = 0
+                    each_env_steps[i_e] = 0
 
         # bootstrap value if not done
         a_returns = []
         a_advantages = []
         with torch.no_grad():
-            for i in range(envs.n_agents):
-                next_value = agent_list[i].get_value(next_obs[i]).reshape(1, -1)
-                advantages = torch.zeros_like(buffers[i]["rewards"]).to(device)
+            for i_a in range(envs.n_agents):
+                next_value = agent_list[i_a].get_value(next_obs[i_a]).reshape(1, -1)
+                advantages = torch.zeros_like(buffers[i_a]["rewards"]).to(device)
                 lastgaelam = 0
                 for t in reversed(range(args.num_steps)):
                     if t == args.num_steps - 1:
                         nextnonterminal = 1.0 - next_done
                         nextvalues = next_value
                     else:
-                        nextnonterminal = 1.0 - buffers[i]["dones"][t + 1]
-                        nextvalues = buffers[i]["values"][t + 1]
-                    delta = buffers[i]["rewards"][t] + args.gamma * nextvalues * nextnonterminal - buffers[i]["values"][t]
+                        nextnonterminal = 1.0 - buffers[i_a]["dones"][t + 1]
+                        nextvalues = buffers[i_a]["values"][t + 1]
+                    delta = buffers[i_a]["rewards"][t] + args.gamma * nextvalues * nextnonterminal - buffers[i_a]["values"][t]
                     advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
-                returns = advantages + buffers[i]["values"]
+                returns = advantages + buffers[i_a]["values"]
                 a_returns.append(returns)
                 a_advantages.append(advantages)
 
-        for i in range(envs.n_agents):
+        for i_a in range(envs.n_agents):
             # flatten the batch
-            b_obs = buffers[i]["obs"].reshape((-1,) + envs.observation_space[i].shape)
-            b_logprobs = buffers[i]["logprobs"].reshape(-1)
-            b_actions = buffers[i]["actions"].reshape((-1,) + envs.action_space[i].shape)
-            b_advantages = a_advantages[i].reshape(-1)
-            b_returns = a_returns[i].reshape(-1)
-            b_values = buffers[i]["values"].reshape(-1)
+            b_obs = buffers[i_a]["obs"].reshape((-1,) + envs.observation_space[i_a].shape)
+            b_logprobs = buffers[i_a]["logprobs"].reshape(-1)
+            b_actions = buffers[i_a]["actions"].reshape((-1,) + envs.action_space[i_a].shape)
+            b_advantages = a_advantages[i_a].reshape(-1)
+            b_returns = a_returns[i_a].reshape(-1)
+            b_values = buffers[i_a]["values"].reshape(-1)
 
             # Optimizing the policy and value network
             b_inds = np.arange(args.batch_size)
@@ -291,7 +318,7 @@ def main():
                     end = start + args.minibatch_size
                     mb_inds = b_inds[start:end]
 
-                    _, newlogprob, entropy, newvalue = agent_list[i].get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
+                    _, newlogprob, entropy, newvalue = agent_list[i_a].get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
                     logratio = newlogprob - b_logprobs[mb_inds]
                     ratio = logratio.exp()
 
@@ -328,13 +355,13 @@ def main():
                     entropy_loss = entropy.mean()
                     loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
 
-                    optimizer_list[i].zero_grad()
+                    optimizer_list[i_a].zero_grad()
                     loss.backward()
-                    nn.utils.clip_grad_norm_(agent_list[i].parameters(), args.max_grad_norm)
-                    optimizer_list[i].step()
+                    nn.utils.clip_grad_norm_(agent_list[i_a].parameters(), args.max_grad_norm)
+                    optimizer_list[i_a].step()
 
                 if args.target_kl is not None and approx_kl > args.target_kl:
-                    print(f"agent{i} breaking")
+                    print(f"agent{i_a} breaking")
                     break
 
             y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
@@ -342,14 +369,14 @@ def main():
             explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
             # TRY NOT TO MODIFY: record rewards for plotting purposes
-            writer.add_scalar(f"charts/agent{i}_learning_rate", optimizer_list[i].param_groups[0]["lr"], global_step)
-            writer.add_scalar(f"losses/agent{i}_value_loss", v_loss.item(), global_step)
-            writer.add_scalar(f"losses/agent{i}_policy_loss", pg_loss.item(), global_step)
-            writer.add_scalar(f"losses/agent{i}_entropy", entropy_loss.item(), global_step)
-            writer.add_scalar(f"losses/agent{i}_old_approx_kl", old_approx_kl.item(), global_step)
-            writer.add_scalar(f"losses/agent{i}_approx_kl", approx_kl.item(), global_step)
-            writer.add_scalar(f"losses/agent{i}_clipfrac", np.mean(clipfracs), global_step)
-            writer.add_scalar(f"losses/agent{i}_explained_variance", explained_var, global_step)
+            writer.add_scalar(f"charts/agent{i_a}_learning_rate", optimizer_list[i_a].param_groups[0]["lr"], global_step)
+            writer.add_scalar(f"losses/agent{i_a}_value_loss", v_loss.item(), global_step)
+            writer.add_scalar(f"losses/agent{i_a}_policy_loss", pg_loss.item(), global_step)
+            writer.add_scalar(f"losses/agent{i_a}_entropy", entropy_loss.item(), global_step)
+            writer.add_scalar(f"losses/agent{i_a}_old_approx_kl", old_approx_kl.item(), global_step)
+            writer.add_scalar(f"losses/agent{i_a}_approx_kl", approx_kl.item(), global_step)
+            writer.add_scalar(f"losses/agent{i_a}_clipfrac", np.mean(clipfracs), global_step)
+            writer.add_scalar(f"losses/agent{i_a}_explained_variance", explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
