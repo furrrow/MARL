@@ -45,15 +45,15 @@ class Args:
     """whether to save model into the `runs/{run_name}` folder"""
 
     # Algorithm specific arguments
-    scenario_name: str = "simple"
+    scenario_name: str = "balance"
     """the scenario_name of the VMAS scenario"""
-    n_agents: int = 1
+    n_agents: int = 4
     """number of agents"""
-    num_envs: int = 12
+    num_envs: int = 1
     """number of environments"""
     env_max_steps: int = 100
     """environment steps before done"""
-    total_timesteps: int = 2_000_000
+    total_timesteps: int = 1_000_000
     """total timesteps of the experiments"""
     learning_rate: float = 5e-4
     """the learning rate of the optimizer"""
@@ -210,7 +210,7 @@ def main():
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs = envs.reset(seed=args.seed)
+    obs = envs.reset(seed=args.seed)
     next_done = torch.zeros(args.num_envs).to(device)
     frame_list = []  # For creating a gif
     total_reward = torch.zeros(envs.num_envs).to(device)
@@ -228,10 +228,10 @@ def main():
             actions = [None] * envs.n_agents
 
             for idx_a in range(envs.n_agents):
-                buffers[idx_a]['obs'][step] = next_obs[idx_a]
+                buffers[idx_a]['obs'][step] = obs[idx_a]
                 buffers[idx_a]['dones'][step] = next_done
                 with (torch.no_grad()):
-                    action, logprob, _, value = agent_list[idx_a].get_action_and_value(next_obs[idx_a])
+                    action, logprob, _, value = agent_list[idx_a].get_action_and_value(obs[idx_a])
                     buffers[idx_a]["values"][step] = value.flatten()
                     low_limit = torch.tensor(envs.action_space[idx_a].low).to(device)
                     high_limit = torch.tensor(envs.action_space[idx_a].high).to(device)
@@ -247,14 +247,31 @@ def main():
             # record rewards for plotting purposes
             global_reward = torch.stack(rewards, dim=1).mean(dim=1)
             total_reward += global_reward
-            for i_e, term in enumerate(terminations):
-                if bool(term) is True:
-                    writer.add_scalar("charts/episodic_return", total_reward[i_e], global_step)
-                    print(f"global_step {global_step} done detected at idx {i_e} "
-                          f"rewards {rewards[i_e]:.3f} episodic_returns {total_reward[i_e]:.3f}")
-                    next_obs = envs.reset_at(index=i_e)
-                    total_reward[i_e] = 0
-                global_step += 1
+            if terminations.sum() > 0:
+                for i_e, term in enumerate(terminations):
+                    if bool(term) is True:
+                        writer.add_scalar("charts/episodic_return", total_reward[i_e], global_step)
+                        print(f"global_step {global_step} done detected at idx {i_e} "
+                              f"rewards {rewards[i_e].item():.3f} episodic_returns {total_reward[i_e]:.3f}")
+                        partial_reset_obs = envs.reset_at(index=i_e)
+                        total_reward[i_e] = 0
+                        global_step += 1
+            else:
+                partial_reset_obs = next_obs.copy()
+                global_step += envs.num_envs
+
+            # CRUCIAL step easy to overlook
+            obs = partial_reset_obs
+
+            if args.render_video:
+                frame_list.append(
+                    envs.render(
+                        mode="rgb_array",
+                        agent_index_focus=None,
+                        visualize_when_rgb=True,
+                    )
+                )
+            frame_list = []
 
         # bootstrap value if not done
         a_returns = []
@@ -278,7 +295,6 @@ def main():
                 a_advantages.append(advantages)
 
         b_inds = np.arange(args.batch_size)  # use the same batch indices across all agents...
-        np.random.shuffle(b_inds)
         for idx_a in range(envs.n_agents):
             # flatten the batch
             b_obs = buffers[idx_a]["obs"].reshape((-1,) + envs.observation_space[idx_a].shape)
@@ -291,6 +307,7 @@ def main():
             # Optimizing the policy and value network
             clipfracs = []
             for epoch in range(args.update_epochs):
+                np.random.shuffle(b_inds)
                 for start in range(0, args.batch_size, args.minibatch_size):
                     end = start + args.minibatch_size
                     mb_inds = b_inds[start:end]
@@ -349,7 +366,6 @@ def main():
             writer.add_scalar(f"charts/agent{idx_a}_learning_rate", optimizer_list[idx_a].param_groups[0]["lr"], global_step)
             writer.add_scalar(f"losses/agent{idx_a}_value_loss", v_loss.item(), global_step)
             writer.add_scalar(f"losses/agent{idx_a}_policy_loss", pg_loss.item(), global_step)
-            print(f"agent{idx_a}_policy_loss: {pg_loss.item():.3f}")
             writer.add_scalar(f"losses/agent{idx_a}_entropy", entropy_loss.item(), global_step)
             writer.add_scalar(f"losses/agent{idx_a}_old_approx_kl", old_approx_kl.item(), global_step)
             writer.add_scalar(f"losses/agent{idx_a}_approx_kl", approx_kl.item(), global_step)
@@ -364,16 +380,6 @@ def main():
             torch.save(model_weights, model_path)
             # TODO: maybe not working yet...
             print(f"model saved to {model_path}")
-
-        if args.render_video:
-            frame_list.append(
-                envs.render(
-                    mode="rgb_array",
-                    agent_index_focus=None,
-                    visualize_when_rgb=True,
-                )
-            )
-        frame_list = []
 
 
 if __name__ == '__main__':

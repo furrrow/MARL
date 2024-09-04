@@ -46,7 +46,7 @@ class Args:
     """the scenario_name of the VMAS scenario"""
     n_agents: int = 4
     """number of agents"""
-    num_envs: int = 12
+    num_envs: int = 6
     """number of environments"""
     env_max_steps: int = 200
     """environment steps before done"""

@@ -25,7 +25,7 @@ https://github.com/vwxyzjn/cleanrl/blob/master/cleanrl/ppo_continuous_action.py
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 1
+    seed: int = 5
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
@@ -203,7 +203,7 @@ def main():
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs = envs.reset(seed=args.seed)
+    obs = envs.reset(seed=args.seed)
     next_done = torch.zeros(args.num_envs).to(device)
     frame_list = []  # For creating a gif
     total_reward = torch.zeros(envs.num_envs).to(device)
@@ -217,12 +217,12 @@ def main():
 
         for step in range(0, args.num_steps):
             actions = [None] * envs.n_agents
-            buffer['obs'][step] = next_obs[0]
+            buffer['obs'][step] = obs[0]
             buffer['dones'][step] = next_done
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs[0])
+                action, logprob, _, value = agent.get_action_and_value(obs[0])
                 buffer["values"][step] = value.flatten()
                 low_limit = torch.tensor(envs.action_space[0].low).to(device)
                 high_limit = torch.tensor(envs.action_space[0].high).to(device)
@@ -238,14 +238,20 @@ def main():
             # record rewards for plotting purposes
             global_reward = torch.stack(rewards, dim=1).mean(dim=1)
             total_reward += global_reward
+
             for idx, item in enumerate(dones):
                 if bool(item) is True:
                     writer.add_scalar("charts/episodic_return", total_reward[idx], global_step)
                     print(f"global_step {global_step} done detected at idx {idx} "
                           f"rewards {reward[idx]:.3f} episodic_returns {total_reward[idx]:.3f}")
-                    next_obs = envs.reset_at(index=idx)
+                    partial_reset_obs = envs.reset_at(index=idx)
                     total_reward[idx] = 0
+                else:
+                    partial_reset_obs = next_obs.copy()
                 global_step += 1
+
+            # CRUCIAL step easy to overlook
+            obs = partial_reset_obs
 
             if args.render_video:
                 frame_list.append(
@@ -273,14 +279,13 @@ def main():
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
             returns = advantages + buffer["values"]
 
-
         # flatten the batch
-        b_obs = buffer["obs"].reshape((-1,) + envs.observation_space[0].shape)  # [batch_size*num_envs, 4]
-        b_logprobs = buffer["logprobs"].reshape(-1)  # [batch_size*num_envs]
-        b_actions = buffer["actions"].reshape((-1,) + envs.action_space[0].shape)  # [batch_size, 2]
-        b_advantages = advantages.reshape(-1)  # [batch_size*num_envs]
-        b_returns = returns.reshape(-1)  # [batch_size*num_envs]
-        b_values = buffer["values"].reshape(-1)  # [batch_size*num_envs]
+        b_obs = buffer["obs"].transpose(0, 1).reshape((-1,) + envs.observation_space[0].shape)  # [batch_size*num_envs, 4]
+        b_logprobs = buffer["logprobs"].T.reshape(-1)  # [batch_size*num_envs]
+        b_actions = buffer["actions"].transpose(0, 1).reshape((-1,) + envs.action_space[0].shape)  # [batch_size, 2]
+        b_advantages = advantages.T.reshape(-1)  # [batch_size*num_envs]
+        b_returns = returns.T.reshape(-1)  # [batch_size*num_envs]
+        b_values = buffer["values"].T.reshape(-1)  # [batch_size*num_envs]
 
         # Optimizing the policy and value network
         b_inds = np.arange(args.batch_size)
