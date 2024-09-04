@@ -45,19 +45,19 @@ class Args:
     """whether to save model into the `runs/{run_name}` folder"""
 
     # Algorithm specific arguments
-    scenario_name: str = "balance"
+    scenario_name: str = "simple"
     """the scenario_name of the VMAS scenario"""
-    n_agents: int = 4
+    n_agents: int = 1
     """number of agents"""
-    num_envs: int = 5
+    num_envs: int = 12
     """number of environments"""
-    env_max_steps: int = 200
+    env_max_steps: int = 100
     """environment steps before done"""
     total_timesteps: int = 2_000_000
     """total timesteps of the experiments"""
-    learning_rate: float = 5e-5
+    learning_rate: float = 5e-4
     """the learning rate of the optimizer"""
-    num_steps: int = 2048
+    num_steps: int = 1000
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -65,7 +65,7 @@ class Args:
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 32
+    num_minibatches: int = 4
     """the number of mini-batches"""
     update_epochs: int = 10
     """the K epochs to update the policy"""
@@ -124,12 +124,16 @@ class Agent(nn.Module):
         return self.critic(x)
 
     def get_action_and_value(self, x, action=None):
-        action_mean = self.actor_mean(x)
-        action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd)
+        action_mean = self.actor_mean(x) # [num_envs, 2]
+        action_logstd = self.actor_logstd.expand_as(action_mean)  # [num_envs, 2]
+        action_std = torch.exp(action_logstd)  # [num_envs, 2]
         probs = Normal(action_mean, action_std)
         if action is None:
             action = probs.sample()
+        # action: [num_envs, 2]
+        # probs.log_prob(action).sum(1): [num_envs]
+        # probs.entropy().sum(1): [num_envs]
+        # self.critic(x): [num_envs, 1]
         return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
 
 
@@ -234,24 +238,23 @@ def main():
                     action = action.clamp(low_limit, high_limit)
                 buffers[idx_a]["actions"][step], actions[idx_a] = action, action
                 buffers[idx_a]["logprobs"][step] = logprob
-
             # execute the game and log data.
             next_obs, rewards, terminations, infos = envs.step(actions)
             next_done = terminations * 1.
             for idx_a in range(envs.n_agents):
-                buffers[idx_a]["rewards"][step] = rewards[idx_a].to(device).clone()
+                buffers[idx_a]["rewards"][step] = rewards[idx_a].to(device).clone()  # TODO .view(-1)?
 
             # record rewards for plotting purposes
             global_reward = torch.stack(rewards, dim=1).mean(dim=1)
             total_reward += global_reward
             for i_e, term in enumerate(terminations):
-                global_step += 1
                 if bool(term) is True:
                     writer.add_scalar("charts/episodic_return", total_reward[i_e], global_step)
                     print(f"global_step {global_step} done detected at idx {i_e} "
-                          f"rewards {rewards[0][i_e]:.3f} episodic_returns {total_reward[i_e]:.3f}")
+                          f"rewards {rewards[i_e]:.3f} episodic_returns {total_reward[i_e]:.3f}")
                     next_obs = envs.reset_at(index=i_e)
                     total_reward[i_e] = 0
+                global_step += 1
 
         # bootstrap value if not done
         a_returns = []

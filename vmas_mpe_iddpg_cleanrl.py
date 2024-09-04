@@ -42,9 +42,9 @@ class Args:
     """whether to save model into the `runs/{run_name}` folder"""
 
     # Algorithm specific arguments
-    scenario_name: str = "simple_speaker_listener"
+    scenario_name: str = "simple"
     """the scenario_name of the VMAS scenario"""
-    n_agents: int = 2
+    n_agents: int = 1
     """number of agents"""
     num_envs: int = 12
     """number of environments"""
