@@ -44,7 +44,7 @@ class Args:
 
     # Algorithm specific arguments
     scenario_name: str = "simple_speaker_listener"
-    """the scenario_name of the VMAS scenario"""
+    """the scenario_name of the pettingzoo scenario"""
     n_agents: int = 2
     """number of agents"""
     num_envs: int = 1
