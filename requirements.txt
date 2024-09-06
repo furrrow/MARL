@@ -19,3 +19,4 @@ tyro
 supersuit
 gym
 pygame
+optuna

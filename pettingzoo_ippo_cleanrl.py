@@ -32,7 +32,7 @@ class Args:
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
+    cuda: bool = False
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
@@ -54,7 +54,7 @@ class Args:
     """number of agents"""
     num_envs: int = 1
     """number of environments"""
-    env_max_steps: int = 100
+    env_max_steps: int = 25
     """environment steps before done"""
     total_timesteps: int = 1_000_000
     """total timesteps of the experiments"""
@@ -136,7 +136,7 @@ class Agent(nn.Module):
         return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
 
 
-def main():
+if __name__ == '__main__':
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
@@ -172,7 +172,8 @@ def main():
     assert (args.num_envs == 1), "no parallel envs in pettingzoo"
     render_mode = "human" if args.render_video else "rgb_array"
     envs = simple_speaker_listener_v4.parallel_env(
-        render_mode=render_mode, continuous_actions=True  # max_cycle default 25
+        render_mode=render_mode, continuous_actions=True,
+        max_cycles=args.env_max_steps  # max_cycle default 25
     )
     envs.reset()
     agent_names = envs.agents.copy()
@@ -233,12 +234,14 @@ def main():
                 # execute the game and log data.
                 next_obs, rewards, dones, truncated, infos = envs.step(actions)
                 for agent_name in agent_names:
-                    done_or_truncated = np.logical_or(dones[agent_name], truncated[agent_name])* 1
+                    done_or_truncated = np.logical_or(dones[agent_name], truncated[agent_name]) * 1
                     next_done[agent_name] = torch.Tensor([done_or_truncated]).to(device)
                     buffers[agent_name]["rewards"][step] = torch.tensor(rewards[agent_name]).to(device)
                     total_reward[agent_name] += rewards[agent_name]
                 global_step += 1
                 step += 1
+                if step >= args.num_steps:
+                    break
 
                 # CRUCIAL step easy to overlook
                 obs = next_obs
@@ -255,7 +258,7 @@ def main():
 
             # pettingzoo handles episode ending differently
             for agent_name in agent_names:
-                writer.add_scalar(f"charts/episodic_return {agent_name}", total_reward[agent_name], global_step)
+                writer.add_scalar(f"charts/episodic_return_{agent_name}", total_reward[agent_name], global_step)
                 print(f"global_step {global_step} {agent_name} episodic_returns {total_reward[agent_name]:.3f}")
 
         # bootstrap value if not done
@@ -272,7 +275,8 @@ def main():
                     else:
                         nextnonterminal = 1.0 - buffers[agent_name]["dones"][t + 1]
                         nextvalues = buffers[agent_name]["values"][t + 1]
-                    delta = buffers[agent_name]["rewards"][t] + args.gamma * nextvalues * nextnonterminal - buffers[agent_name]["values"][t]
+                    delta = buffers[agent_name]["rewards"][t] + args.gamma * nextvalues * nextnonterminal - \
+                            buffers[agent_name]["values"][t]
                     advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
                 returns = advantages + buffers[agent_name]["values"]
 
@@ -336,7 +340,8 @@ def main():
             explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
             # TRY NOT TO MODIFY: record rewards for plotting purposes
-            writer.add_scalar(f"charts/{agent_name}_learning_rate", optimizers[agent_name].param_groups[0]["lr"], global_step)
+            writer.add_scalar(f"charts/{agent_name}_learning_rate", optimizers[agent_name].param_groups[0]["lr"],
+                              global_step)
             writer.add_scalar(f"losses/{agent_name}_value_loss", v_loss.item(), global_step)
             writer.add_scalar(f"losses/{agent_name}_policy_loss", pg_loss.item(), global_step)
             writer.add_scalar(f"losses/{agent_name}_entropy", entropy_loss.item(), global_step)
@@ -353,7 +358,3 @@ def main():
             torch.save(model_weights, model_path)
             # TODO: maybe not working yet...
             print(f"model saved to {model_path}")
-
-
-if __name__ == '__main__':
-    main()
