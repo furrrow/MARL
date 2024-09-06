@@ -143,6 +143,7 @@ def main():
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
     current_time = datetime.datetime.now()
+    print("WARNING: vmas version of PPO does not train yet!")
     run_name = f"{args.exp_name}__{args.seed}__{current_time.strftime('%m%d%y_%H%M')}"
     if args.track:
         import wandb

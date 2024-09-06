@@ -143,6 +143,7 @@ def main():
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
     current_time = datetime.datetime.now()
+    print("WARNING: vmas version of PPO does not train yet!")
     run_name = f"{args.exp_name}__{args.seed}__{current_time.strftime('%m%d%y_%H%M')}"
     if args.track:
         import wandb
@@ -378,7 +379,6 @@ def main():
             model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
             model_weights = [agent.state_dict() for agent in agent_list]
             torch.save(model_weights, model_path)
-            # TODO: maybe not working yet...
             print(f"model saved to {model_path}")
 
 

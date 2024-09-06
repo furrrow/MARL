@@ -48,7 +48,7 @@ class Args:
     # Algorithm specific arguments
     scenario_name: str = "simple"
     """the scenario_name of the pettingzoo scenario"""
-    num_agents: int = 1
+    n_agents: int = 1
     """number of agents"""
     num_envs: int = 1
     """number of environments"""
@@ -131,10 +131,6 @@ class Agent(nn.Module):
         probs = Normal(action_mean, action_std)
         if action is None:
             action = probs.sample()
-        # action: [num_envs, 2]
-        # probs.log_prob(action).sum(1): [num_envs]
-        # probs.entropy().sum(1): [num_envs]
-        # self.critic(x): [num_envs, 1]
         return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(x)
 
 
@@ -173,13 +169,12 @@ def main():
     print(f"using {device}")
     assert (args.num_envs == 1), "no parallel envs in pettingzoo"
     render_mode = "human" if args.render_video else "rgb_array"
-    # envs = simple_v3.env(render_mode = render_mode, max_cycles=25, continuous_actions=True)
     envs = simple_v3.parallel_env(
         render_mode = render_mode, max_cycles=25, continuous_actions=True
     )
     envs.reset()
     agent_name = envs.agents[0]
-    assert (args.num_agents == envs.num_agents), "arg n_agents mismatch env n_agents"
+    assert (args.n_agents == envs.num_agents), "arg n_agents mismatch env n_agents"
 
     agent = Agent(envs, agent_name, args.n_hidden).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
