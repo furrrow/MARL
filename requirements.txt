@@ -1,22 +1,22 @@
+# suggested: python 3.8 for multi-agent-ale-py
+# pettingzoo includes box2d-py and multi-agent-ale-py
+swig # needed for box2d-py
+# cmake gcc g++ zlib1g-dev needed for box2d and multi-agent-ale
+pettingzoo[all]
 torch
 torchvision
 torchaudio
 torchrl
-tensordict
-benchmarl
+tensorboard
+# benchmarl
+
 wandb
 vmas
-pettingzoo[all]
 tqdm
 matplotlib
-PyAV
 av
 PExpect
 
-pillow
-gymnasium
 tyro
 supersuit
-gym
-pygame
 optuna
