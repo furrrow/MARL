@@ -11,7 +11,7 @@ Tuner's 'target_scores' needs to be populated
 Suggest a couple trial runs with low 'total-timesteps' to test before kicking off all the runs
 """
 tuner = Tuner(
-    script="pettingzoo_ippo_cleanrl.py",
+    script="pettingzoo_mappo_cleanrl.py",
     metric="charts/episodic_return_listener_0",
     metric_last_n_average_window=50,
     direction="maximize",
@@ -22,12 +22,12 @@ tuner = Tuner(
         "simple_speaker_listener": [-500, 0],
     },
     params_fn=lambda trial: {
-        "learning-rate": trial.suggest_float("learning-rate", 5e-5, 3e-3, log=True),
-        "num-minibatches": trial.suggest_categorical("num-minibatches", [1, 2, 4]),
+        "learning-rate": trial.suggest_float("learning-rate", 4e-5, 3e-3, log=True),
+        "num-minibatches": trial.suggest_categorical("num-minibatches", [2, 4]),
         "update-epochs": trial.suggest_categorical("update-epochs", [4, 8, 10, 12]),
         "num-steps": trial.suggest_categorical("num-steps", [128, 264, 1024, 2056]),
-        "vf-coef": trial.suggest_float("vf-coef", 0, 5),
-        "max-grad-norm": trial.suggest_float("max-grad-norm", 0, 5),
+        "vf-coef": trial.suggest_float("vf-coef", 0, 2),
+        "max-grad-norm": trial.suggest_float("max-grad-norm", 0, 2),
         "total-timesteps": 400_000,
         "num-envs": 1,
     },
@@ -36,5 +36,5 @@ tuner = Tuner(
 )
 tuner.tune(
     num_trials=100,
-    num_seeds=3,
+    num_seeds=5,
 )

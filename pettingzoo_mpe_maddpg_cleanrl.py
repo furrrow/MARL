@@ -50,9 +50,9 @@ class Args:
     """number of agents"""
     num_envs: int = 1
     """number of environments"""
-    env_max_steps: int = 100
+    env_max_steps: int = 25
     """environment steps before done"""
-    total_timesteps: int = 2_500_000  # 2_500_000
+    total_timesteps: int = 1_000_000  # 2_500_000
     """total timesteps of the experiments"""
     learning_rate: float = 0.01
     """the learning rate of the optimizer"""
@@ -160,8 +160,8 @@ def main():
     actors = {}
     actor_targets = {}
     actor_optimizers = {}
-    n_total_actions = sum([value.shape[0] for key, value in envs.action_spaces.items()])
-    n_total_states = sum([value.shape[0] for key, value in envs.observation_spaces.items()])
+    n_total_actions = sum([envs.action_space(agent_name).shape[0] for agent_name in agent_names])
+    n_total_states = sum([envs.observation_space(agent_name).shape[0] for agent_name in agent_names])
     total_reward = {}
     rb = ReplayBuffer(
         storage=LazyTensorStorage(max_size=args.buffer_size, device=device),
@@ -192,9 +192,10 @@ def main():
     global_step = 0
     episode = 0
     loop = 0
+    # pygame.init()
     while global_step < args.total_timesteps:
         obs, infos = envs.reset()
-        pygame.event.get()
+        # pygame.event.get()
         while envs.agents:
             actions = {}
             for agent_name in envs.agents:
@@ -283,8 +284,8 @@ def main():
 
         # pettingzoo handles episode ending differently
         for agent_name in agent_names:
-            writer.add_scalar(f"charts/episodic_return {agent_name}", total_reward[agent_name], global_step)
-            print(f"global_step {global_step} {agent_name} episodic_returns {total_reward[agent_name]:.3f}")
+            writer.add_scalar(f"charts/episodic_return_{agent_name}", total_reward[agent_name], global_step)
+            print(f"global_step {global_step} {agent_name} episodic_return {total_reward[agent_name]:.3f}")
             total_reward[agent_name] = 0
         episode += 1
 
